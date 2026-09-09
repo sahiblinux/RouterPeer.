@@ -27,6 +27,8 @@
         tools:targetApi="tiramisu" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
 
     <application
         android:name=".RouterPeerApp"

@@ -67,17 +67,20 @@ fun PermissionRequestWrapper(content: @Composable () -> Unit) {
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.NEARBY_WIFI_DEVICES,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.RECORD_AUDIO
             )
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.RECORD_AUDIO
             )
             else -> arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.RECORD_AUDIO
             )
         }
     }
@@ -124,7 +127,7 @@ fun RouterPeerAppHost(gatewayViewModel: GatewayViewModel) {
                 }
                 val meshViewModel: MeshViewModel = viewModel(
                     key = state.keyring.nodeId,
-                    factory = MeshViewModel.Factory(repository)
+                    factory = MeshViewModel.Factory(repository, isDecoyMode = state.isDecoy)
                 )
 
                 MainMeshScreen(

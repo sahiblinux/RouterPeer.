@@ -11,6 +11,7 @@ import com.example.crypto.toHex
 import com.example.data.db.AppDatabase
 import com.example.data.db.GroupEntity
 import com.example.data.db.MessageEntity
+import com.example.data.db.MulePacketEntity
 import com.example.data.db.PeerEntity
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -32,6 +33,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Collections
@@ -70,6 +72,9 @@ class NearbyMeshManager(
     private val _stats = MutableStateFlow(MeshStats())
     val stats: StateFlow<MeshStats> = _stats.asStateFlow()
 
+    val acousticModem = AcousticModem(context)
+    val mulePacketCount = database.mulePacketDao().getValidMuleCount()
+
     // Deduplication LRU cache to prevent mesh routing loops and broadcast storms
     private val seenPacketIds = Collections.newSetFromMap(
         object : LinkedHashMap<String, Boolean>(1000, 0.75f, true) {
@@ -84,6 +89,24 @@ class NearbyMeshManager(
     init {
         scope.launch {
             database.peerDao().markAllDisconnected()
+        }
+        // Background Ephemeral Message & Mule Buffer Scrubber
+        scope.launch {
+            while (isActive) {
+                kotlinx.coroutines.delay(3000)
+                try {
+                    val expired = database.messageDao().getExpiredUnscrubbedMessages(System.currentTimeMillis())
+                    for (msg in expired) {
+                        database.messageDao().scrubMessage(msg.id)
+                    }
+                    if (expired.isNotEmpty()) {
+                        database.messageDao().deleteScrubbedMessages()
+                    }
+                    database.mulePacketDao().pruneExpired(System.currentTimeMillis())
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in background scrubber", e)
+                }
+            }
         }
     }
 
@@ -272,19 +295,38 @@ class NearbyMeshManager(
             return
         }
 
-        // 3. Handle Direct Messages
-        if (packet.type == PacketType.DIRECT_MESSAGE) {
-            if (packet.destinationId == keyring.nodeId) {
-                // For this node! Decrypt and persist
-                handleDirectMessage(packet)
-            } else if (packet.hopCount < packet.maxHops) {
-                // Multi-hop routing forwarding
+        // 3. Handle SOS Emergency Beacon
+        if (packet.type == PacketType.SOS_BEACON) {
+            handleSosBeacon(packet)
+            if (packet.hopCount < packet.maxHops) {
                 forwardMeshPacket(packet, excludeEndpointId = fromEndpointId)
             }
             return
         }
 
-        // 4. Handle Group Key Invite
+        // 4. Handle Direct Messages
+        if (packet.type == PacketType.DIRECT_MESSAGE) {
+            if (packet.destinationId == keyring.nodeId) {
+                // For this node! Decrypt and persist
+                handleDirectMessage(packet)
+            } else {
+                // Store in Delay-Tolerant "Mule" buffer to carry to recipient
+                database.mulePacketDao().insertMulePacket(
+                    MulePacketEntity(
+                        packetId = packet.packetId,
+                        destinationId = packet.destinationId,
+                        packetJson = packet.toJsonString()
+                    )
+                )
+                if (packet.hopCount < packet.maxHops) {
+                    // Multi-hop routing forwarding
+                    forwardMeshPacket(packet, excludeEndpointId = fromEndpointId)
+                }
+            }
+            return
+        }
+
+        // 5. Handle Group Key Invite
         if (packet.type == PacketType.GROUP_KEY_INVITE) {
             if (packet.destinationId == keyring.nodeId) {
                 handleGroupKeyInvite(packet)
@@ -294,7 +336,7 @@ class NearbyMeshManager(
             return
         }
 
-        // 5. Handle Group Broadcast Messages
+        // 6. Handle Group Broadcast Messages
         if (packet.type == PacketType.GROUP_MESSAGE) {
             // Attempt to decrypt if node belongs to this group
             handleGroupMessage(packet)
@@ -342,6 +384,9 @@ class NearbyMeshManager(
             endpointToPeerNodeId[fromEndpointId] = identity.nodeId
             updateActiveLinks()
             Log.d(TAG, "Handshake successful with peer ${identity.nodeId} (${identity.alias})")
+
+            // Store-and-Forward: Offload queued mule packets for this peer
+            offloadMulePacketsForPeer(identity.nodeId, fromEndpointId)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling handshake", e)
         }
@@ -373,6 +418,9 @@ class NearbyMeshManager(
                 associatedData = packet.packetId.toByteArray(Charsets.UTF_8)
             )
             val messageText = String(decryptedBytes, Charsets.UTF_8)
+            val expiresAt = if (packet.ephemeralDurationMs != null) {
+                System.currentTimeMillis() + packet.ephemeralDurationMs
+            } else null
 
             val msg = MessageEntity(
                 messageId = packet.packetId,
@@ -384,7 +432,9 @@ class NearbyMeshManager(
                 isOutgoing = false,
                 isVerified = true,
                 status = "DELIVERED",
-                hops = packet.hopCount
+                hops = packet.hopCount,
+                ephemeralDurationMs = packet.ephemeralDurationMs,
+                expiresAt = expiresAt
             )
             database.messageDao().insertMessage(msg)
         } catch (e: Exception) {
@@ -470,6 +520,43 @@ class NearbyMeshManager(
         }
     }
 
+    private fun offloadMulePacketsForPeer(targetNodeId: String, targetEndpointId: String) {
+        scope.launch {
+            val queued = database.mulePacketDao().getPacketsForDestination(targetNodeId)
+            queued.forEach { item ->
+                val packet = MeshPacket.fromByteArray(item.packetJson.toByteArray(Charsets.UTF_8))
+                if (packet != null) {
+                    connectionsClient.sendPayload(targetEndpointId, Payload.fromBytes(packet.toByteArray()))
+                    database.mulePacketDao().deleteMulePacket(item.packetId)
+                    Log.d(TAG, "Mule offloaded DTN packet ${item.packetId} to node $targetNodeId")
+                }
+            }
+        }
+    }
+
+    private suspend fun handleSosBeacon(packet: MeshPacket) {
+        try {
+            val payloadBytes = Base64.decode(packet.encryptedPayloadBase64, Base64.NO_WRAP)
+            val sosText = String(payloadBytes, Charsets.UTF_8)
+            val msg = MessageEntity(
+                messageId = packet.packetId,
+                senderNodeId = packet.sourceNodeId,
+                recipientId = "*",
+                groupId = null,
+                content = sosText,
+                timestamp = packet.timestamp,
+                isOutgoing = (packet.sourceNodeId == keyring.nodeId),
+                isVerified = true,
+                status = "EMERGENCY_SOS",
+                hops = packet.hopCount
+            )
+            database.messageDao().insertMessage(msg)
+            Log.w(TAG, "EMERGENCY SOS BEACON RECEIVED from ${packet.sourceNodeId}: $sosText")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed handling SOS beacon", e)
+        }
+    }
+
     private fun forwardMeshPacket(packet: MeshPacket, excludeEndpointId: String) {
         val forwardedPacket = packet.copy(hopCount = packet.hopCount + 1)
         val payload = Payload.fromBytes(forwardedPacket.toByteArray())
@@ -484,8 +571,10 @@ class NearbyMeshManager(
 
     /**
      * Sends an End-to-End Encrypted Direct Message to a peer node.
+     * Supports optional self-destruct ephemeral timers.
+     * Automatically buffers packet into Store-and-Forward mule buffer if peer is out of radio range.
      */
-    suspend fun sendDirectMessage(recipientNodeId: String, text: String): Boolean {
+    suspend fun sendDirectMessage(recipientNodeId: String, text: String, ephemeralDurationMs: Long? = null): Boolean {
         val peer = database.peerDao().getPeerByNodeId(recipientNodeId) ?: return false
         val sharedSecretHex = peer.sharedSecretHex ?: return false
         val sharedKey = sharedSecretHex.decodeHex()
@@ -506,7 +595,8 @@ class NearbyMeshManager(
             ivBase64 = Base64.encodeToString(iv, Base64.NO_WRAP),
             ed25519SignatureBase64 = "",
             hopCount = 0,
-            maxHops = 5
+            maxHops = 5,
+            ephemeralDurationMs = ephemeralDurationMs
         )
 
         // Sign packet
@@ -514,6 +604,10 @@ class NearbyMeshManager(
         val finalPacket = packetDraft.copy(
             ed25519SignatureBase64 = Base64.encodeToString(sig, Base64.NO_WRAP)
         )
+
+        val expiresAt = if (ephemeralDurationMs != null) {
+            System.currentTimeMillis() + ephemeralDurationMs
+        } else null
 
         // Record locally
         val entity = MessageEntity(
@@ -526,11 +620,74 @@ class NearbyMeshManager(
             isOutgoing = true,
             isVerified = true,
             status = "SENT",
-            hops = 0
+            hops = 0,
+            ephemeralDurationMs = ephemeralDurationMs,
+            expiresAt = expiresAt
         )
         database.messageDao().insertMessage(entity)
 
         // Broadcast to all connected endpoints (direct or mesh flood)
+        val payload = Payload.fromBytes(finalPacket.toByteArray())
+        endpointToPeerNodeId.keys.forEach { endpointId ->
+            connectionsClient.sendPayload(endpointId, payload)
+        }
+
+        // If recipient is not directly connected, store in mule buffer
+        val isDirectlyConnected = endpointToPeerNodeId.values.contains(recipientNodeId)
+        if (!isDirectlyConnected) {
+            database.mulePacketDao().insertMulePacket(
+                MulePacketEntity(
+                    packetId = packetId,
+                    destinationId = recipientNodeId,
+                    packetJson = finalPacket.toJsonString()
+                )
+            )
+            Log.d(TAG, "Recipient not in direct range; buffered in Mule DTN storage: $packetId")
+        }
+
+        _stats.update { it.copy(packetsSent = it.packetsSent + 1) }
+        return true
+    }
+
+    /**
+     * Broadcasts a one-tap Mesh SOS Emergency Beacon flooding all nodes with extended TTL (15 hops).
+     */
+    suspend fun sendEmergencySosBeacon(distressType: String, notes: String): Boolean {
+        val packetId = UUID.randomUUID().toString()
+        val sosText = "[SOS: $distressType] $notes"
+        val payloadBytes = sosText.toByteArray(Charsets.UTF_8)
+        val payloadB64 = Base64.encodeToString(payloadBytes, Base64.NO_WRAP)
+
+        val packetDraft = MeshPacket(
+            packetId = packetId,
+            type = PacketType.SOS_BEACON,
+            sourceNodeId = keyring.nodeId,
+            destinationId = "*",
+            encryptedPayloadBase64 = payloadB64,
+            ivBase64 = "",
+            ed25519SignatureBase64 = "",
+            hopCount = 0,
+            maxHops = 15
+        )
+        val sig = CryptoManager.sign(keyring.ed25519PrivateKey, packetDraft.getSignableData())
+        val finalPacket = packetDraft.copy(
+            ed25519SignatureBase64 = Base64.encodeToString(sig, Base64.NO_WRAP)
+        )
+
+        val entity = MessageEntity(
+            messageId = packetId,
+            senderNodeId = keyring.nodeId,
+            recipientId = "*",
+            groupId = null,
+            content = sosText,
+            timestamp = System.currentTimeMillis(),
+            isOutgoing = true,
+            isVerified = true,
+            status = "EMERGENCY_SOS",
+            hops = 0
+        )
+        database.messageDao().insertMessage(entity)
+
         val payload = Payload.fromBytes(finalPacket.toByteArray())
         endpointToPeerNodeId.keys.forEach { endpointId ->
             connectionsClient.sendPayload(endpointId, payload)

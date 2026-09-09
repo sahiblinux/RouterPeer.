@@ -25,6 +25,8 @@ class MeshRepository(
     val isAdvertising: StateFlow<Boolean> = meshManager.isAdvertising
     val isDiscovering: StateFlow<Boolean> = meshManager.isDiscovering
     val connectedEndpoints: StateFlow<Map<String, String>> = meshManager.connectedEndpoints
+    val mulePacketCount: Flow<Int> = meshManager.mulePacketCount
+    val acousticModem = meshManager.acousticModem
 
     fun getDirectConversation(peerNodeId: String): Flow<List<MessageEntity>> {
         return database.messageDao().getDirectConversation(peerNodeId, keyring.nodeId)
@@ -34,8 +36,12 @@ class MeshRepository(
         return database.messageDao().getGroupConversation(groupId)
     }
 
-    suspend fun sendDirectMessage(recipientNodeId: String, text: String): Boolean {
-        return meshManager.sendDirectMessage(recipientNodeId, text)
+    suspend fun sendDirectMessage(recipientNodeId: String, text: String, ephemeralDurationMs: Long? = null): Boolean {
+        return meshManager.sendDirectMessage(recipientNodeId, text, ephemeralDurationMs)
+    }
+
+    suspend fun sendEmergencySosBeacon(distressType: String, notes: String): Boolean {
+        return meshManager.sendEmergencySosBeacon(distressType, notes)
     }
 
     suspend fun sendGroupMessage(groupId: String, text: String): Boolean {

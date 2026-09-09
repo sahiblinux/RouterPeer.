@@ -2,6 +2,7 @@ package com.example.ui.mesh
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,7 +26,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.db.MessageEntity
+import com.example.ui.theme.AmberPanic
 import com.example.ui.theme.CyberBlack
 import com.example.ui.theme.CyberBorder
 import com.example.ui.theme.CyberSurface
@@ -75,11 +79,14 @@ fun ChatDetailScreen(
     onBack: () -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
+    var selectedEphemeralMs by remember { mutableStateOf<Long?>(null) }
+    var showEphemeralMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val title: String
     val subtitle: String
     val isGroup = destination is ActiveChatDestination.Group
+    val isDirectDisconnected = (destination is ActiveChatDestination.Direct) && !destination.peer.isNearbyConnected
 
     val messagesFlow = remember(destination) {
         when (destination) {
@@ -176,67 +183,162 @@ fun ChatDetailScreen(
                 border = androidx.compose.foundation.BorderStroke(1.dp, CyberBorder),
                 modifier = Modifier.imePadding()
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = { Text("Encrypted message...", color = TextMuted) },
-                        maxLines = 4,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = NeonCyan,
-                            unfocusedBorderColor = CyberBorder,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary,
-                            focusedContainerColor = CyberBlack,
-                            unfocusedContainerColor = CyberBlack
-                        ),
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("chat_message_input")
-                    )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // Ephemeral timer bar for Direct chats
+                    if (destination is ActiveChatDestination.Direct) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = "Disappearing timer",
+                                tint = if (selectedEphemeralMs != null) AmberPanic else TextMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Self-Destruct:",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                                color = TextSecondary
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
 
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    IconButton(
-                        onClick = {
-                            val text = inputText.trim()
-                            if (text.isNotEmpty()) {
-                                when (destination) {
-                                    is ActiveChatDestination.Direct -> viewModel.sendDirectMessage(destination.peer.nodeId, text)
-                                    is ActiveChatDestination.Group -> viewModel.sendGroupMessage(destination.group.groupId, text)
+                            val options = listOf(
+                                "OFF" to null,
+                                "30s" to 30_000L,
+                                "5m" to 300_000L,
+                                "1h" to 3600_000L,
+                                "24h" to 86400_000L
+                            )
+                            options.forEach { (label, duration) ->
+                                val isSelected = selectedEphemeralMs == duration
+                                Surface(
+                                    color = if (isSelected) (if (duration != null) AmberPanic else NeonCyan) else CyberSurfaceVariant,
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier
+                                        .padding(horizontal = 3.dp)
+                                        .clickable { selectedEphemeralMs = duration }
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Monospace
+                                        ),
+                                        color = if (isSelected) CyberBlack else TextSecondary,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
                                 }
-                                inputText = ""
                             }
-                        },
-                        enabled = inputText.isNotBlank(),
+                        }
+                    }
+
+                    Row(
                         modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(if (inputText.isNotBlank()) NeonCyan else CyberSurfaceVariant)
-                            .testTag("chat_send_button")
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send Encrypted Message",
-                            tint = if (inputText.isNotBlank()) CyberBlack else TextMuted
+                        OutlinedTextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            placeholder = {
+                                Text(
+                                    if (selectedEphemeralMs != null) "Self-destructing message..." else "Encrypted message...",
+                                    color = TextMuted
+                                )
+                            },
+                            maxLines = 4,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = if (selectedEphemeralMs != null) AmberPanic else NeonCyan,
+                                unfocusedBorderColor = CyberBorder,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                focusedContainerColor = CyberBlack,
+                                unfocusedContainerColor = CyberBlack
+                            ),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("chat_message_input")
                         )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = {
+                                val text = inputText.trim()
+                                if (text.isNotEmpty()) {
+                                    when (destination) {
+                                        is ActiveChatDestination.Direct -> viewModel.sendDirectMessage(
+                                            destination.peer.nodeId,
+                                            text,
+                                            ephemeralDurationMs = selectedEphemeralMs
+                                        )
+                                        is ActiveChatDestination.Group -> viewModel.sendGroupMessage(
+                                            destination.group.groupId,
+                                            text
+                                        )
+                                    }
+                                    inputText = ""
+                                }
+                            },
+                            enabled = inputText.isNotBlank(),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(if (inputText.isNotBlank()) (if (selectedEphemeralMs != null) AmberPanic else NeonCyan) else CyberSurfaceVariant)
+                                .testTag("chat_send_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send Encrypted Message",
+                                tint = if (inputText.isNotBlank()) CyberBlack else TextMuted
+                            )
+                        }
                     }
                 }
             }
         }
     ) { paddingValues ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(CyberBlack)
         ) {
+            if (isDirectDisconnected) {
+                Surface(
+                    color = CyberSurfaceVariant,
+                    shape = RoundedCornerShape(6.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Hub,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "DTN Mule Active: Recipient offline. Message buffered in encrypted relay queue until proximity contact.",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = TextSecondary
+                        )
+                    }
+                }
+            }
             if (messages.isEmpty()) {
                 Column(
                     modifier = Modifier
@@ -285,9 +387,22 @@ fun ChatDetailScreen(
 @Composable
 private fun MessageBubble(message: MessageEntity, isGroup: Boolean) {
     val isOutgoing = message.isOutgoing
+    val isSos = message.status == "EMERGENCY_SOS" || message.content.startsWith("[EMERGENCY SOS BEACON]")
+    val isScrubbed = message.isScrubbed || message.content.contains("[PURGED")
+
     val alignment = if (isOutgoing) Alignment.End else Alignment.Start
-    val bubbleColor = if (isOutgoing) CyberSurfaceVariant else CyberSurface
-    val borderColor = if (isOutgoing) NeonCyan.copy(alpha = 0.5f) else CyberBorder
+    val bubbleColor = when {
+        isSos -> AmberPanic.copy(alpha = 0.2f)
+        isScrubbed -> CyberSurfaceVariant.copy(alpha = 0.5f)
+        isOutgoing -> CyberSurfaceVariant
+        else -> CyberSurface
+    }
+    val borderColor = when {
+        isSos -> AmberPanic
+        isScrubbed -> CyberBorder.copy(alpha = 0.4f)
+        isOutgoing -> NeonCyan.copy(alpha = 0.5f)
+        else -> CyberBorder
+    }
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     Column(
@@ -301,7 +416,7 @@ private fun MessageBubble(message: MessageEntity, isGroup: Boolean) {
                     fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace
                 ),
-                color = NeonCyan,
+                color = if (isSos) AmberPanic else NeonCyan,
                 modifier = Modifier.padding(start = 6.dp, bottom = 2.dp)
             )
         }
@@ -315,13 +430,43 @@ private fun MessageBubble(message: MessageEntity, isGroup: Boolean) {
                 bottomEnd = if (isOutgoing) 2.dp else 14.dp
             ),
             border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
-            modifier = Modifier.widthIn(max = 280.dp)
+            modifier = Modifier.widthIn(max = 300.dp)
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                if (isSos) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "SOS",
+                            tint = AmberPanic,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "EMERGENCY SOS FLOOD",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            color = AmberPanic
+                        )
+                    }
+                }
+
                 Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextPrimary
+                    text = if (isScrubbed) "[PURGED & ZEROED - ZERO TRACE]" else message.content,
+                    style = if (isScrubbed) {
+                        MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            color = TextMuted
+                        )
+                    } else {
+                        MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(4.dp))
@@ -331,6 +476,31 @@ private fun MessageBubble(message: MessageEntity, isGroup: Boolean) {
                     horizontalArrangement = Arrangement.End,
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    if (message.ephemeralDurationMs != null && !isScrubbed) {
+                        Icon(
+                            imageVector = Icons.Default.Timer,
+                            contentDescription = "Ephemeral",
+                            tint = AmberPanic,
+                            modifier = Modifier.size(11.dp)
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(
+                            text = when (message.ephemeralDurationMs) {
+                                30_000L -> "30s"
+                                300_000L -> "5m"
+                                3600_000L -> "1h"
+                                86400_000L -> "24h"
+                                else -> "${message.ephemeralDurationMs / 1000}s"
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            color = AmberPanic,
+                            modifier = Modifier.padding(end = 6.dp)
+                        )
+                    }
+
                     if (message.isVerified) {
                         Icon(
                             imageVector = Icons.Default.VerifiedUser,

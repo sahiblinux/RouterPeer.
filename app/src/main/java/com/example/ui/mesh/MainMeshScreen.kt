@@ -25,8 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Lock
@@ -107,6 +109,8 @@ fun MainMeshScreen(
     var showPairDialog by remember { mutableStateOf(false) }
     var showCreateGroupDialog by remember { mutableStateOf(false) }
     var showWipeConfirmDialog by remember { mutableStateOf(false) }
+    var showSosDialog by remember { mutableStateOf(false) }
+    var showAcousticDialog by remember { mutableStateOf(false) }
 
     val activeChat by viewModel.activeChat.collectAsStateWithLifecycle()
     val peers by viewModel.peers.collectAsStateWithLifecycle()
@@ -159,9 +163,53 @@ fun MainMeshScreen(
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
+
+                        if (viewModel.isDecoyMode) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = AmberWarning.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(4.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, AmberWarning)
+                            ) {
+                                Text(
+                                    text = "DECOY",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 9.sp
+                                    ),
+                                    color = AmberWarning,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                     }
                 },
                 actions = {
+                    // Emergency SOS Beacon Button
+                    IconButton(
+                        onClick = { showSosDialog = true },
+                        modifier = Modifier.testTag("sos_beacon_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Campaign,
+                            contentDescription = "Mesh SOS Beacon",
+                            tint = AmberPanic
+                        )
+                    }
+
+                    // Acoustic Modem Fallback Button
+                    IconButton(
+                        onClick = { showAcousticDialog = true },
+                        modifier = Modifier.testTag("acoustic_modem_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.GraphicEq,
+                            contentDescription = "Acoustic Pairing & Fallback",
+                            tint = NeonCyan
+                        )
+                    }
+
                     // Active Links Indicator
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -306,6 +354,7 @@ fun MainMeshScreen(
                     viewModel = viewModel,
                     onShowQr = { showQrDialog = true },
                     onOpenPair = { showPairDialog = true },
+                    onOpenAcoustic = { showAcousticDialog = true },
                     onTriggerPanic = { showWipeConfirmDialog = true }
                 )
             }
@@ -353,6 +402,23 @@ fun MainMeshScreen(
                 showWipeConfirmDialog = false
                 onEmergencyWipe()
             }
+        )
+    }
+
+    if (showSosDialog) {
+        EmergencySosBeaconDialog(
+            onDismiss = { showSosDialog = false },
+            onBroadcast = { distressType, notes ->
+                viewModel.sendEmergencySosBeacon(distressType, notes)
+                Toast.makeText(context, "Emergency SOS beacon flooded across mesh nodes!", Toast.LENGTH_LONG).show()
+            }
+        )
+    }
+
+    if (showAcousticDialog) {
+        AcousticModemDialog(
+            viewModel = viewModel,
+            onDismiss = { showAcousticDialog = false }
         )
     }
 }
@@ -593,6 +659,7 @@ private fun TopologyTab(
 ) {
     val isAdv by viewModel.isAdvertising.collectAsStateWithLifecycle()
     val isDisc by viewModel.isDiscovering.collectAsStateWithLifecycle()
+    val muleCount by viewModel.mulePacketCount.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     LazyColumn(
@@ -700,6 +767,50 @@ private fun TopologyTab(
             }
         }
 
+        // Store-and-Forward (DTN Mule) status
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CyberSurface),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CyberBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "DTN MULE ROUTING BUFFER",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 1.sp
+                            ),
+                            color = NeonCyan
+                        )
+                        Text(
+                            text = "$muleCount buffered",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = if (muleCount > 0) AmberWarning else EmeraldShield
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Store-and-forward delay-tolerant routing. Encrypted packets intended for offline/unreachable peers are securely held in intermediate nodes and offloaded when recipient radio comes in proximity range.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+
         // Discovered Mesh Nodes list
         item {
             Text(
@@ -791,6 +902,7 @@ private fun VaultTab(
     viewModel: MeshViewModel,
     onShowQr: () -> Unit,
     onOpenPair: () -> Unit,
+    onOpenAcoustic: () -> Unit,
     onTriggerPanic: () -> Unit
 ) {
     val keyring = viewModel.keyring
@@ -800,6 +912,38 @@ private fun VaultTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        if (viewModel.isDecoyMode) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = CyberSurface),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AmberWarning),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Security, contentDescription = null, tint = AmberWarning, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "GUEST VAULT / DECOY ACTIVE",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = AmberWarning,
+                                    letterSpacing = 1.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Authenticated with Decoy credential. Primary cryptographic identity, authentic direct conversations, and sensitive keys are segregated and completely hidden.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+                }
+            }
+        }
         // Zero-Data Identity Card
         item {
             Card(
@@ -862,6 +1006,19 @@ private fun VaultTab(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Pair Peer", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Button(
+                        onClick = onOpenAcoustic,
+                        colors = ButtonDefaults.buttonColors(containerColor = CyberSurfaceVariant, contentColor = NeonCyan),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(imageVector = Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Acoustic Modem (Air-Gapped Audio)", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                     }
                 }
             }

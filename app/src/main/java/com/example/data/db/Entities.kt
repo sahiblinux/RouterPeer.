@@ -24,9 +24,31 @@ data class MessageEntity(
     val timestamp: Long = System.currentTimeMillis(),
     val isOutgoing: Boolean,
     val isVerified: Boolean = true,
-    val status: String = "SENT", // PENDING, SENT, DELIVERED, ROUTED
-    val hops: Int = 0
+    val status: String = "SENT", // PENDING, SENT, DELIVERED, ROUTED, EMERGENCY_SOS
+    val hops: Int = 0,
+    val ephemeralDurationMs: Long? = null,
+    val expiresAt: Long? = null,
+    val isScrubbed: Boolean = false
 )
+
+@Entity(
+    tableName = "mule_packets",
+    indices = [
+        Index(value = ["packetId"], unique = true),
+        Index(value = ["destinationId"]),
+        Index(value = ["expiresAt"])
+    ]
+)
+data class MulePacketEntity(
+    @PrimaryKey
+    val packetId: String,
+    val destinationId: String, // Destination Node ID or Group ID
+    val packetJson: String,
+    val storedAt: Long = System.currentTimeMillis(),
+    val expiresAt: Long = System.currentTimeMillis() + (48 * 60 * 60 * 1000L), // 48h default TTL
+    val forwardCount: Int = 0
+)
+
 
 @Entity(
     tableName = "peers",

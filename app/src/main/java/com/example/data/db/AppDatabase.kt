@@ -10,9 +10,10 @@ import androidx.room.RoomDatabase
         MessageEntity::class,
         PeerEntity::class,
         GroupEntity::class,
-        MeshRouteEntity::class
+        MeshRouteEntity::class,
+        MulePacketEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -21,6 +22,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
     abstract fun groupDao(): GroupDao
     abstract fun meshRouteDao(): MeshRouteDao
+    abstract fun mulePacketDao(): MulePacketDao
+
 
     companion object {
         const val DATABASE_NAME = "routerpeer_mesh_vault.db"

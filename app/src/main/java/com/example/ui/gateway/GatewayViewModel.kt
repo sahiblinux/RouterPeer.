@@ -24,7 +24,7 @@ sealed interface GatewayUiState {
         val failedAttempts: Int = 0,
         val errorMessage: String? = null
     ) : GatewayUiState
-    data class Unlocked(val keyring: LocalKeyring) : GatewayUiState
+    data class Unlocked(val keyring: LocalKeyring, val isDecoy: Boolean = false) : GatewayUiState
 }
 
 /**
@@ -68,6 +68,8 @@ class GatewayViewModel(
         confirmPrimaryPass: String,
         panicPass: String,
         confirmPanicPass: String,
+        decoyPass: String? = null,
+        confirmDecoyPass: String? = null,
         onValidationError: (String) -> Unit
     ) {
         if (primaryPass.length < 4) {
@@ -90,11 +92,25 @@ class GatewayViewModel(
             onValidationError("Panic password MUST differ from primary password")
             return
         }
+        if (!decoyPass.isNullOrBlank()) {
+            if (decoyPass.length < 4) {
+                onValidationError("Decoy password must be at least 4 characters")
+                return
+            }
+            if (decoyPass != confirmDecoyPass) {
+                onValidationError("Decoy passwords do not match")
+                return
+            }
+            if (decoyPass == primaryPass || decoyPass == panicPass) {
+                onValidationError("Decoy password must differ from Primary and Panic passwords")
+                return
+            }
+        }
 
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                // Configure both salted & hashed passwords in EncryptedSharedPreferences
-                securePreferences.configurePasswords(primaryPass, panicPass)
+                // Configure salted & hashed passwords in EncryptedSharedPreferences
+                securePreferences.configurePasswords(primaryPass, panicPass, decoyPass)
                 // Initialize user's zero-data cryptographic keyring & 8-digit Node ID
                 val keyring = securePreferences.getOrCreateKeyring()
                 _uiState.value = GatewayUiState.Unlocked(keyring)
@@ -104,7 +120,8 @@ class GatewayViewModel(
 
     /**
      * Verifies the entered password against the dual-password gateway.
-     * Triggers normal access for Primary Password, or an instantaneous silent wipe for Panic Password.
+     * Triggers normal access for Primary Password, decoy access for Decoy Password,
+     * or an instantaneous silent wipe for Panic Password.
      */
     fun submitPassword(enteredPass: String) {
         if (enteredPass.isBlank()) return
@@ -121,7 +138,16 @@ class GatewayViewModel(
                     val keyring = withContext(Dispatchers.IO) {
                         securePreferences.getOrCreateKeyring()
                     }
-                    _uiState.value = GatewayUiState.Unlocked(keyring)
+                    _uiState.value = GatewayUiState.Unlocked(keyring, isDecoy = false)
+                }
+
+                SecurePreferences.PasswordVerificationResult.DECOY_SUCCESS -> {
+                    // Decoy / Guest Vault access granted
+                    failedAttemptsCount = 0
+                    val decoyKeyring = withContext(Dispatchers.IO) {
+                        securePreferences.getDecoyKeyring()
+                    }
+                    _uiState.value = GatewayUiState.Unlocked(decoyKeyring, isDecoy = true)
                 }
 
                 SecurePreferences.PasswordVerificationResult.PANIC_TRIGGERED -> {

@@ -27,7 +27,8 @@ sealed interface ActiveChatDestination {
 }
 
 class MeshViewModel(
-    private val repository: MeshRepository
+    private val repository: MeshRepository,
+    val isDecoyMode: Boolean = false
 ) : ViewModel() {
 
     val keyring: LocalKeyring = repository.keyring
@@ -46,6 +47,13 @@ class MeshViewModel(
     val isDiscovering: StateFlow<Boolean> = repository.isDiscovering
     val connectedEndpoints: StateFlow<Map<String, String>> = repository.connectedEndpoints
 
+    val mulePacketCount: StateFlow<Int> = repository.mulePacketCount
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val isAcousticTransmitting: StateFlow<Boolean> = repository.acousticModem.isTransmitting
+    val isAcousticListening: StateFlow<Boolean> = repository.acousticModem.isListening
+    val lastAcousticReceived: StateFlow<String?> = repository.acousticModem.lastReceivedData
+
     private val _activeChat = MutableStateFlow<ActiveChatDestination?>(null)
     val activeChat: StateFlow<ActiveChatDestination?> = _activeChat.asStateFlow()
 
@@ -54,7 +62,9 @@ class MeshViewModel(
 
     init {
         generateIdentityQrCode()
-        repository.startMesh()
+        if (!isDecoyMode) {
+            repository.startMesh()
+        }
     }
 
     private fun generateIdentityQrCode() {
@@ -77,11 +87,33 @@ class MeshViewModel(
         _activeChat.value = null
     }
 
-    fun sendDirectMessage(recipientNodeId: String, text: String) {
+    fun sendDirectMessage(recipientNodeId: String, text: String, ephemeralDurationMs: Long? = null) {
         if (text.isBlank()) return
         viewModelScope.launch {
-            repository.sendDirectMessage(recipientNodeId, text)
+            repository.sendDirectMessage(recipientNodeId, text, ephemeralDurationMs)
         }
+    }
+
+    fun sendEmergencySosBeacon(distressType: String, notes: String) {
+        viewModelScope.launch {
+            repository.sendEmergencySosBeacon(distressType, notes)
+        }
+    }
+
+    fun transmitAcoustic(payload: String, onComplete: () -> Unit) {
+        viewModelScope.launch {
+            repository.acousticModem.transmitAcousticData(payload) {
+                onComplete()
+            }
+        }
+    }
+
+    fun startAcousticListening(onDecoded: (String) -> Unit) {
+        repository.acousticModem.startListening(onDecoded)
+    }
+
+    fun stopAcousticListening() {
+        repository.acousticModem.stopListening()
     }
 
     fun sendGroupMessage(groupId: String, text: String) {
@@ -140,10 +172,14 @@ class MeshViewModel(
         repository.stopMesh()
     }
 
-    class Factory(private val repository: MeshRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val repository: MeshRepository,
+        private val isDecoyMode: Boolean = false
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return MeshViewModel(repository) as T
+            return MeshViewModel(repository, isDecoyMode) as T
         }
     }
+
 }

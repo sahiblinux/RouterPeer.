@@ -31,9 +31,19 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :newStatus WHERE messageId = :messageId")
     suspend fun updateStatus(messageId: String, newStatus: String)
 
+    @Query("SELECT * FROM messages WHERE expiresAt IS NOT NULL AND expiresAt <= :now AND isScrubbed = 0")
+    suspend fun getExpiredUnscrubbedMessages(now: Long = System.currentTimeMillis()): List<MessageEntity>
+
+    @Query("UPDATE messages SET content = '[PURGED - ZERO TRACE]', isScrubbed = 1 WHERE id = :id")
+    suspend fun scrubMessage(id: Long)
+
+    @Query("DELETE FROM messages WHERE isScrubbed = 1")
+    suspend fun deleteScrubbedMessages()
+
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
 }
+
 
 @Dao
 interface PeerDao {
@@ -100,3 +110,29 @@ interface MeshRouteDao {
     @Query("DELETE FROM mesh_routes")
     suspend fun deleteAll()
 }
+
+@Dao
+interface MulePacketDao {
+
+    @Query("SELECT * FROM mule_packets WHERE destinationId = :destId AND expiresAt > :now")
+    suspend fun getPacketsForDestination(destId: String, now: Long = System.currentTimeMillis()): List<MulePacketEntity>
+
+    @Query("SELECT * FROM mule_packets WHERE expiresAt > :now")
+    suspend fun getAllValidMulePackets(now: Long = System.currentTimeMillis()): List<MulePacketEntity>
+
+    @Query("SELECT COUNT(*) FROM mule_packets WHERE expiresAt > :now")
+    fun getValidMuleCount(now: Long = System.currentTimeMillis()): Flow<Int>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMulePacket(packet: MulePacketEntity)
+
+    @Query("DELETE FROM mule_packets WHERE packetId = :packetId")
+    suspend fun deleteMulePacket(packetId: String)
+
+    @Query("DELETE FROM mule_packets WHERE expiresAt <= :now")
+    suspend fun pruneExpired(now: Long = System.currentTimeMillis()): Int
+
+    @Query("DELETE FROM mule_packets")
+    suspend fun deleteAll()
+}
+

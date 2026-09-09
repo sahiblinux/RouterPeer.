@@ -8,7 +8,8 @@ enum class PacketType {
     DIRECT_MESSAGE,     // Encrypted with derived pairwise HKDF AES-256-GCM
     GROUP_KEY_INVITE,   // Encrypted symmetric group key distributed to a member
     GROUP_MESSAGE,      // Broadcast message encrypted with group symmetric AES-256-GCM
-    ROUTING_HEARTBEAT   // Topology broadcast
+    ROUTING_HEARTBEAT,  // Topology broadcast
+    SOS_BEACON          // Emergency priority broadcast beacon (extended TTL flood)
 }
 
 data class MeshPacket(
@@ -21,13 +22,14 @@ data class MeshPacket(
     val ed25519SignatureBase64: String,
     val hopCount: Int = 0,
     val maxHops: Int = 5,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val ephemeralDurationMs: Long? = null
 ) {
     /**
      * Canonical string representation for cryptographic signing and verification.
      */
     fun getSignableData(): ByteArray {
-        val canonical = "$packetId|$type|$sourceNodeId|$destinationId|$encryptedPayloadBase64|$ivBase64|$timestamp"
+        val canonical = "$packetId|$type|$sourceNodeId|$destinationId|$encryptedPayloadBase64|$ivBase64|$timestamp|${ephemeralDurationMs ?: 0}"
         return canonical.toByteArray(Charsets.UTF_8)
     }
 
@@ -43,6 +45,9 @@ data class MeshPacket(
         obj.put("hops", hopCount)
         obj.put("maxHops", maxHops)
         obj.put("ts", timestamp)
+        if (ephemeralDurationMs != null) {
+            obj.put("eph", ephemeralDurationMs)
+        }
         return obj.toString()
     }
 
@@ -55,6 +60,7 @@ data class MeshPacket(
             return try {
                 val json = String(bytes, Charsets.UTF_8)
                 val obj = JSONObject(json)
+                val eph = if (obj.has("eph")) obj.getLong("eph") else null
                 MeshPacket(
                     packetId = obj.getString("pid"),
                     type = PacketType.valueOf(obj.getString("type")),
@@ -65,7 +71,8 @@ data class MeshPacket(
                     ed25519SignatureBase64 = obj.getString("sig"),
                     hopCount = obj.optInt("hops", 0),
                     maxHops = obj.optInt("maxHops", 5),
-                    timestamp = obj.optLong("ts", System.currentTimeMillis())
+                    timestamp = obj.optLong("ts", System.currentTimeMillis()),
+                    ephemeralDurationMs = eph
                 )
             } catch (e: Exception) {
                 null
@@ -73,3 +80,4 @@ data class MeshPacket(
         }
     }
 }
+

@@ -2,8 +2,8 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main, master ] # Runs every time you push to main or master
-  workflow_dispatch: # Allows you to trigger it manually
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,14 +11,20 @@ jobs:
 
     steps:
     - name: Checkout Source Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5 # Updated to v5
 
     - name: Set up JDK 17
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v5 # Updated to v5
       with:
         distribution: 'zulu'
         java-version: '17'
-        cache: 'gradle'
+
+    - name: Generate Gradle Wrapper (If Missing)
+      run: |
+        if [ ! -f "./gradlew" ]; then
+          echo "Gradle wrapper missing. Generating one..."
+          gradle wrapper
+        fi
 
     - name: Make Gradle Executable
       run: chmod +x ./gradlew
@@ -30,4 +36,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: app-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+        path: |
+          app/build/outputs/apk/debug/*.apk
+          **/build/outputs/apk/debug/*.apk

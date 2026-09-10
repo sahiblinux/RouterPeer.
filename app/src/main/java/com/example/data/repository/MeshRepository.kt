@@ -40,12 +40,43 @@ class MeshRepository(
         return meshManager.sendDirectMessage(recipientNodeId, text, ephemeralDurationMs)
     }
 
+    suspend fun sendDirectMediaMessage(
+        recipientNodeId: String,
+        mediaType: String,
+        mediaBytes: ByteArray,
+        localFilePath: String,
+        text: String = "",
+        durationMs: Long = 0L,
+        ephemeralDurationMs: Long? = null
+    ): Boolean {
+        return meshManager.sendDirectMediaMessage(
+            recipientNodeId, mediaType, mediaBytes, localFilePath, text, durationMs, ephemeralDurationMs
+        )
+    }
+
     suspend fun sendEmergencySosBeacon(distressType: String, notes: String): Boolean {
         return meshManager.sendEmergencySosBeacon(distressType, notes)
     }
 
     suspend fun sendGroupMessage(groupId: String, text: String): Boolean {
         return meshManager.sendGroupMessage(groupId, text)
+    }
+
+    suspend fun sendGroupMediaMessage(
+        groupId: String,
+        mediaType: String,
+        mediaBytes: ByteArray,
+        localFilePath: String,
+        text: String = "",
+        durationMs: Long = 0L
+    ): Boolean {
+        return meshManager.sendGroupMediaMessage(
+            groupId, mediaType, mediaBytes, localFilePath, text, durationMs
+        )
+    }
+
+    suspend fun getPeer(nodeId: String): PeerEntity? {
+        return database.peerDao().getPeerByNodeId(nodeId)
     }
 
     suspend fun createGroup(groupName: String, memberNodeIds: List<String>): String {

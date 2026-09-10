@@ -111,12 +111,33 @@ fun MainMeshScreen(
     var showWipeConfirmDialog by remember { mutableStateOf(false) }
     var showSosDialog by remember { mutableStateOf(false) }
     var showAcousticDialog by remember { mutableStateOf(false) }
+    var showLiveScanner by remember { mutableStateOf(false) }
 
     val activeChat by viewModel.activeChat.collectAsStateWithLifecycle()
     val peers by viewModel.peers.collectAsStateWithLifecycle()
     val groups by viewModel.groups.collectAsStateWithLifecycle()
     val stats by viewModel.meshStats.collectAsStateWithLifecycle()
     val qrBitmap by viewModel.qrCodeBitmap.collectAsStateWithLifecycle()
+
+    // If live QR scanner is active, display the camera scanner
+    if (showLiveScanner) {
+        LiveQrScannerScreen(
+            onQrDecoded = { qrContent ->
+                showLiveScanner = false
+                viewModel.importPeerAndStartChat(qrContent) { success, msg, peer ->
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
+            },
+            onManualPasteClick = {
+                showLiveScanner = false
+                showPairDialog = true
+            },
+            onClose = {
+                showLiveScanner = false
+            }
+        )
+        return
+    }
 
     // If a chat is active, display the full-screen chat screen
     if (activeChat != null) {
@@ -186,6 +207,18 @@ fun MainMeshScreen(
                     }
                 },
                 actions = {
+                    // Live Camera QR Scanner Button
+                    IconButton(
+                        onClick = { showLiveScanner = true },
+                        modifier = Modifier.testTag("action_live_scanner_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.QrCodeScanner,
+                            contentDescription = "Scan Peer QR Code to Chat",
+                            tint = NeonCyan
+                        )
+                    }
+
                     // Emergency SOS Beacon Button
                     IconButton(
                         onClick = { showSosDialog = true },
@@ -343,6 +376,7 @@ fun MainMeshScreen(
                     groups = groups,
                     onPeerClick = { viewModel.openDirectChat(it) },
                     onGroupClick = { viewModel.openGroupChat(it) },
+                    onOpenScanner = { showLiveScanner = true },
                     onOpenPairDialog = { showPairDialog = true }
                 )
                 1 -> TopologyTab(
@@ -353,6 +387,7 @@ fun MainMeshScreen(
                 2 -> VaultTab(
                     viewModel = viewModel,
                     onShowQr = { showQrDialog = true },
+                    onOpenScanner = { showLiveScanner = true },
                     onOpenPair = { showPairDialog = true },
                     onOpenAcoustic = { showAcousticDialog = true },
                     onTriggerPanic = { showWipeConfirmDialog = true }
@@ -373,6 +408,10 @@ fun MainMeshScreen(
     if (showPairDialog) {
         PairPeerDialog(
             onDismiss = { showPairDialog = false },
+            onLaunchScanner = {
+                showPairDialog = false
+                showLiveScanner = true
+            },
             onPair = { rawJson ->
                 viewModel.importPeerFromPayload(rawJson) { success, msg ->
                     Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
@@ -429,6 +468,7 @@ private fun CommsTab(
     groups: List<GroupEntity>,
     onPeerClick: (PeerEntity) -> Unit,
     onGroupClick: (GroupEntity) -> Unit,
+    onOpenScanner: () -> Unit,
     onOpenPairDialog: () -> Unit
 ) {
     LazyColumn(
@@ -436,7 +476,7 @@ private fun CommsTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Quick Pair Peer Header Card
+        // Quick Pair & Live QR Scanner Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CyberSurface),
@@ -444,27 +484,53 @@ private fun CommsTab(
                 border = androidx.compose.foundation.BorderStroke(1.dp, CyberBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.QrCodeScanner,
-                        contentDescription = null,
-                        tint = NeonCyan,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Add Peer Contact", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
-                        Text("Import peer QR payload to exchange ECDH keys", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                    }
-                    Button(
-                        onClick = onOpenPairDialog,
-                        colors = ButtonDefaults.buttonColors(containerColor = CyberSurfaceVariant, contentColor = NeonCyan),
-                        shape = RoundedCornerShape(8.dp)
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Pair", fontWeight = FontWeight.Bold)
+                        Icon(
+                            imageVector = Icons.Default.QrCodeScanner,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Direct QR Peer Join", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                            Text("Scan a peer's identity QR code to instantly pair and chat", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onOpenScanner,
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = CyberBlack),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .weight(1.3f)
+                                .testTag("comms_scan_qr_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Scan to Chat", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = onOpenPairDialog,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .weight(0.8f)
+                                .testTag("comms_paste_json_button")
+                        ) {
+                            Text("Paste JSON", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -901,6 +967,7 @@ private fun StatTile(title: String, value: String, modifier: Modifier = Modifier
 private fun VaultTab(
     viewModel: MeshViewModel,
     onShowQr: () -> Unit,
+    onOpenScanner: () -> Unit,
     onOpenPair: () -> Unit,
     onOpenAcoustic: () -> Unit,
     onTriggerPanic: () -> Unit
@@ -996,15 +1063,15 @@ private fun VaultTab(
                             Text("My QR Code", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                         }
 
-                        OutlinedButton(
-                            onClick = onOpenPair,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        Button(
+                            onClick = onOpenScanner,
+                            colors = ButtonDefaults.buttonColors(containerColor = CyberSurfaceVariant, contentColor = NeonCyan),
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Pair Peer", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                            Text("Scan QR", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                         }
                     }
 

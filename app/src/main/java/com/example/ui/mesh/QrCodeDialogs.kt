@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -202,7 +203,8 @@ fun MyIdentityQrDialog(
 @Composable
 fun PairPeerDialog(
     onDismiss: () -> Unit,
-    onPair: (String) -> Unit
+    onPair: (String) -> Unit,
+    onLaunchScanner: () -> Unit = {}
 ) {
     var rawInput by remember { mutableStateOf("") }
 
@@ -219,18 +221,33 @@ fun PairPeerDialog(
         },
         text = {
             Column {
+                OutlinedButton(
+                    onClick = onLaunchScanner,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("launch_camera_scanner_button")
+                ) {
+                    Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Scan with Camera", fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
                 Text(
-                    text = "Paste the raw JSON payload scanned or shared from another RouterPeer node:",
+                    text = "Or paste raw JSON payload manually:",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = rawInput,
                     onValueChange = { rawInput = it },
                     placeholder = { Text("{\"nodeId\":\"XXXX-XXXX\", ...}", color = TextMuted) },
-                    minLines = 4,
-                    maxLines = 6,
+                    minLines = 3,
+                    maxLines = 5,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = NeonCyan,
                         unfocusedBorderColor = CyberBorder,

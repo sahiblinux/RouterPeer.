@@ -28,7 +28,11 @@ data class MessageEntity(
     val hops: Int = 0,
     val ephemeralDurationMs: Long? = null,
     val expiresAt: Long? = null,
-    val isScrubbed: Boolean = false
+    val isScrubbed: Boolean = false,
+    val mediaType: String = "TEXT", // TEXT, IMAGE, VIDEO, VOICE_NOTE
+    val mediaUri: String? = null,
+    val mediaSize: Long = 0L,
+    val mediaDurationMs: Long = 0L
 )
 
 @Entity(

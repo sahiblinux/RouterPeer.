@@ -1,6 +1,6 @@
 {
   "name": "RouterPeer",
-  "description": "Offline P2P mesh network communicator with zero-data architecture, dual-password gateway, and end-to-end encryption.",
+  "description": "Offline P2P mesh network communicator with zero-data architecture, live camera QR scanner to join and chat, multimedia messaging (photos, videos, voice notes), and end-to-end encryption.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

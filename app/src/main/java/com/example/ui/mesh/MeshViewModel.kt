@@ -123,6 +123,42 @@ class MeshViewModel(
         }
     }
 
+    fun sendMediaMessage(
+        destination: ActiveChatDestination,
+        mediaType: String,
+        mediaBytes: ByteArray,
+        localFilePath: String,
+        text: String = "",
+        durationMs: Long = 0L,
+        ephemeralDurationMs: Long? = null
+    ) {
+        viewModelScope.launch {
+            when (destination) {
+                is ActiveChatDestination.Direct -> {
+                    repository.sendDirectMediaMessage(
+                        recipientNodeId = destination.peer.nodeId,
+                        mediaType = mediaType,
+                        mediaBytes = mediaBytes,
+                        localFilePath = localFilePath,
+                        text = text,
+                        durationMs = durationMs,
+                        ephemeralDurationMs = ephemeralDurationMs
+                    )
+                }
+                is ActiveChatDestination.Group -> {
+                    repository.sendGroupMediaMessage(
+                        groupId = destination.group.groupId,
+                        mediaType = mediaType,
+                        mediaBytes = mediaBytes,
+                        localFilePath = localFilePath,
+                        text = text,
+                        durationMs = durationMs
+                    )
+                }
+            }
+        }
+    }
+
     fun createGroup(groupName: String, selectedMemberIds: List<String>, onCreated: (String) -> Unit) {
         if (groupName.isBlank()) return
         viewModelScope.launch {
@@ -147,6 +183,30 @@ class MeshViewModel(
                 onResult(true, "Successfully paired peer: ${payload.alias} (${payload.nodeId})")
             } else {
                 onResult(false, "Failed to pair peer")
+            }
+        }
+    }
+
+    fun importPeerAndStartChat(rawJsonOrPayload: String, onResult: (Boolean, String, PeerEntity?) -> Unit) {
+        viewModelScope.launch {
+            val payload = IdentityPayload.fromJson(rawJsonOrPayload.trim())
+            if (payload == null) {
+                onResult(false, "Invalid QR code format", null)
+                return@launch
+            }
+            if (payload.nodeId == keyring.nodeId) {
+                onResult(false, "Cannot pair your own Node ID", null)
+                return@launch
+            }
+            val success = repository.pairPeer(payload)
+            if (success) {
+                val peer = repository.getPeer(payload.nodeId)
+                if (peer != null) {
+                    openDirectChat(peer)
+                }
+                onResult(true, "Paired with ${payload.alias}! Opening chat...", peer)
+            } else {
+                onResult(false, "Failed to pair peer", null)
             }
         }
     }

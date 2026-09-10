@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.File
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -417,7 +418,40 @@ class NearbyMeshManager(
                 ciphertextWithTag = cipherBytes,
                 associatedData = packet.packetId.toByteArray(Charsets.UTF_8)
             )
-            val messageText = String(decryptedBytes, Charsets.UTF_8)
+            val messageTextRaw = String(decryptedBytes, Charsets.UTF_8)
+            var messageText = messageTextRaw
+            var mediaType = "TEXT"
+            var mediaUri: String? = null
+            var mediaSize = 0L
+            var mediaDurationMs = 0L
+
+            if (messageTextRaw.startsWith("{") && messageTextRaw.contains("\"mediaType\"")) {
+                try {
+                    val mediaJson = JSONObject(messageTextRaw)
+                    mediaType = mediaJson.optString("mediaType", "TEXT")
+                    messageText = mediaJson.optString("text", "")
+                    mediaDurationMs = mediaJson.optLong("durationMs", 0L)
+                    mediaSize = mediaJson.optLong("size", 0L)
+                    val b64 = mediaJson.optString("mediaData", "")
+                    if (b64.isNotEmpty()) {
+                        val mediaBytes = Base64.decode(b64, Base64.NO_WRAP)
+                        val ext = when (mediaType) {
+                            "IMAGE" -> "jpg"
+                            "VIDEO" -> "mp4"
+                            "VOICE_NOTE" -> "m4a"
+                            else -> "bin"
+                        }
+                        val mediaDir = File(context.filesDir, "mesh_media").apply { mkdirs() }
+                        val file = File(mediaDir, "recv_${packet.packetId}.$ext")
+                        file.writeBytes(mediaBytes)
+                        mediaUri = file.absolutePath
+                        mediaSize = mediaBytes.size.toLong()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed parsing received media JSON", e)
+                }
+            }
+
             val expiresAt = if (packet.ephemeralDurationMs != null) {
                 System.currentTimeMillis() + packet.ephemeralDurationMs
             } else null
@@ -434,7 +468,11 @@ class NearbyMeshManager(
                 status = "DELIVERED",
                 hops = packet.hopCount,
                 ephemeralDurationMs = packet.ephemeralDurationMs,
-                expiresAt = expiresAt
+                expiresAt = expiresAt,
+                mediaType = mediaType,
+                mediaUri = mediaUri,
+                mediaSize = mediaSize,
+                mediaDurationMs = mediaDurationMs
             )
             database.messageDao().insertMessage(msg)
         } catch (e: Exception) {
@@ -497,7 +535,39 @@ class NearbyMeshManager(
             val iv = Base64.decode(packet.ivBase64, Base64.NO_WRAP)
             val cipherBytes = Base64.decode(packet.encryptedPayloadBase64, Base64.NO_WRAP)
             val decrypted = CryptoManager.decryptAesGcm(groupKey, iv, cipherBytes, packet.packetId.toByteArray())
-            val messageText = String(decrypted, Charsets.UTF_8)
+            val messageTextRaw = String(decrypted, Charsets.UTF_8)
+            var messageText = messageTextRaw
+            var mediaType = "TEXT"
+            var mediaUri: String? = null
+            var mediaSize = 0L
+            var mediaDurationMs = 0L
+
+            if (messageTextRaw.startsWith("{") && messageTextRaw.contains("\"mediaType\"")) {
+                try {
+                    val mediaJson = JSONObject(messageTextRaw)
+                    mediaType = mediaJson.optString("mediaType", "TEXT")
+                    messageText = mediaJson.optString("text", "")
+                    mediaDurationMs = mediaJson.optLong("durationMs", 0L)
+                    mediaSize = mediaJson.optLong("size", 0L)
+                    val b64 = mediaJson.optString("mediaData", "")
+                    if (b64.isNotEmpty()) {
+                        val mediaBytes = Base64.decode(b64, Base64.NO_WRAP)
+                        val ext = when (mediaType) {
+                            "IMAGE" -> "jpg"
+                            "VIDEO" -> "mp4"
+                            "VOICE_NOTE" -> "m4a"
+                            else -> "bin"
+                        }
+                        val mediaDir = File(context.filesDir, "mesh_media").apply { mkdirs() }
+                        val file = File(mediaDir, "recv_${packet.packetId}.$ext")
+                        file.writeBytes(mediaBytes)
+                        mediaUri = file.absolutePath
+                        mediaSize = mediaBytes.size.toLong()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed parsing received group media JSON", e)
+                }
+            }
 
             // Don't re-save if we sent it ourselves
             if (packet.sourceNodeId != keyring.nodeId) {
@@ -511,7 +581,11 @@ class NearbyMeshManager(
                     isOutgoing = false,
                     isVerified = isVerified,
                     status = "DELIVERED",
-                    hops = packet.hopCount
+                    hops = packet.hopCount,
+                    mediaType = mediaType,
+                    mediaUri = mediaUri,
+                    mediaSize = mediaSize,
+                    mediaDurationMs = mediaDurationMs
                 )
                 database.messageDao().insertMessage(msg)
             }
@@ -643,6 +717,101 @@ class NearbyMeshManager(
                 )
             )
             Log.d(TAG, "Recipient not in direct range; buffered in Mule DTN storage: $packetId")
+        }
+
+        _stats.update { it.copy(packetsSent = it.packetsSent + 1) }
+        return true
+    }
+
+    /**
+     * Sends an End-to-End Encrypted Direct Multimedia Message (Image, Video, or Voice Note).
+     */
+    suspend fun sendDirectMediaMessage(
+        recipientNodeId: String,
+        mediaType: String,
+        mediaBytes: ByteArray,
+        localFilePath: String,
+        text: String = "",
+        durationMs: Long = 0L,
+        ephemeralDurationMs: Long? = null
+    ): Boolean {
+        val peer = database.peerDao().getPeerByNodeId(recipientNodeId) ?: return false
+        val sharedSecretHex = peer.sharedSecretHex ?: return false
+        val sharedKey = sharedSecretHex.decodeHex()
+
+        val packetId = UUID.randomUUID().toString()
+
+        val mediaPayloadObj = JSONObject().apply {
+            put("text", text)
+            put("mediaType", mediaType)
+            put("mediaData", Base64.encodeToString(mediaBytes, Base64.NO_WRAP))
+            put("durationMs", durationMs)
+            put("size", mediaBytes.size)
+        }
+
+        val (iv, ciphertext) = CryptoManager.encryptAesGcm(
+            aesKey = sharedKey,
+            plaintext = mediaPayloadObj.toString().toByteArray(Charsets.UTF_8),
+            associatedData = packetId.toByteArray(Charsets.UTF_8)
+        )
+
+        val packetDraft = MeshPacket(
+            packetId = packetId,
+            type = PacketType.DIRECT_MESSAGE,
+            sourceNodeId = keyring.nodeId,
+            destinationId = recipientNodeId,
+            encryptedPayloadBase64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP),
+            ivBase64 = Base64.encodeToString(iv, Base64.NO_WRAP),
+            ed25519SignatureBase64 = "",
+            hopCount = 0,
+            maxHops = 5,
+            ephemeralDurationMs = ephemeralDurationMs
+        )
+
+        val sig = CryptoManager.sign(keyring.ed25519PrivateKey, packetDraft.getSignableData())
+        val finalPacket = packetDraft.copy(
+            ed25519SignatureBase64 = Base64.encodeToString(sig, Base64.NO_WRAP)
+        )
+
+        val expiresAt = if (ephemeralDurationMs != null) {
+            System.currentTimeMillis() + ephemeralDurationMs
+        } else null
+
+        val entity = MessageEntity(
+            messageId = packetId,
+            senderNodeId = keyring.nodeId,
+            recipientId = recipientNodeId,
+            groupId = null,
+            content = text,
+            timestamp = System.currentTimeMillis(),
+            isOutgoing = true,
+            isVerified = true,
+            status = "SENT",
+            hops = 0,
+            ephemeralDurationMs = ephemeralDurationMs,
+            expiresAt = expiresAt,
+            mediaType = mediaType,
+            mediaUri = localFilePath,
+            mediaSize = mediaBytes.size.toLong(),
+            mediaDurationMs = durationMs
+        )
+        database.messageDao().insertMessage(entity)
+
+        val payload = Payload.fromBytes(finalPacket.toByteArray())
+        endpointToPeerNodeId.keys.forEach { endpointId ->
+            connectionsClient.sendPayload(endpointId, payload)
+        }
+
+        val isDirectlyConnected = endpointToPeerNodeId.values.contains(recipientNodeId)
+        if (!isDirectlyConnected) {
+            database.mulePacketDao().insertMulePacket(
+                MulePacketEntity(
+                    packetId = packetId,
+                    destinationId = recipientNodeId,
+                    packetJson = finalPacket.toJsonString()
+                )
+            )
+            Log.d(TAG, "Recipient not in direct range; media buffered in Mule DTN storage: $packetId")
         }
 
         _stats.update { it.copy(packetsSent = it.packetsSent + 1) }
@@ -807,6 +976,80 @@ class NearbyMeshManager(
         database.messageDao().insertMessage(entity)
 
         // Flood to all mesh neighbors
+        val payload = Payload.fromBytes(finalPacket.toByteArray())
+        endpointToPeerNodeId.keys.forEach { ep ->
+            connectionsClient.sendPayload(ep, payload)
+        }
+
+        _stats.update { it.copy(packetsSent = it.packetsSent + 1) }
+        return true
+    }
+
+    /**
+     * Sends an End-to-End Encrypted Group Multimedia Message (Image, Video, or Voice Note).
+     */
+    suspend fun sendGroupMediaMessage(
+        groupId: String,
+        mediaType: String,
+        mediaBytes: ByteArray,
+        localFilePath: String,
+        text: String = "",
+        durationMs: Long = 0L
+    ): Boolean {
+        val group = database.groupDao().getGroupById(groupId) ?: return false
+        val groupKey = group.groupKeyHex.decodeHex()
+
+        val packetId = UUID.randomUUID().toString()
+
+        val mediaPayloadObj = JSONObject().apply {
+            put("text", text)
+            put("mediaType", mediaType)
+            put("mediaData", Base64.encodeToString(mediaBytes, Base64.NO_WRAP))
+            put("durationMs", durationMs)
+            put("size", mediaBytes.size)
+        }
+
+        val (iv, ciphertext) = CryptoManager.encryptAesGcm(
+            aesKey = groupKey,
+            plaintext = mediaPayloadObj.toString().toByteArray(Charsets.UTF_8),
+            associatedData = packetId.toByteArray()
+        )
+
+        val packetDraft = MeshPacket(
+            packetId = packetId,
+            type = PacketType.GROUP_MESSAGE,
+            sourceNodeId = keyring.nodeId,
+            destinationId = groupId,
+            encryptedPayloadBase64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP),
+            ivBase64 = Base64.encodeToString(iv, Base64.NO_WRAP),
+            ed25519SignatureBase64 = "",
+            hopCount = 0,
+            maxHops = 5
+        )
+
+        val sig = CryptoManager.sign(keyring.ed25519PrivateKey, packetDraft.getSignableData())
+        val finalPacket = packetDraft.copy(
+            ed25519SignatureBase64 = Base64.encodeToString(sig, Base64.NO_WRAP)
+        )
+
+        val entity = MessageEntity(
+            messageId = packetId,
+            senderNodeId = keyring.nodeId,
+            recipientId = groupId,
+            groupId = groupId,
+            content = text,
+            timestamp = System.currentTimeMillis(),
+            isOutgoing = true,
+            isVerified = true,
+            status = "SENT",
+            hops = 0,
+            mediaType = mediaType,
+            mediaUri = localFilePath,
+            mediaSize = mediaBytes.size.toLong(),
+            mediaDurationMs = durationMs
+        )
+        database.messageDao().insertMessage(entity)
+
         val payload = Payload.fromBytes(finalPacket.toByteArray())
         endpointToPeerNodeId.keys.forEach { ep ->
             connectionsClient.sendPayload(ep, payload)
